@@ -9,15 +9,21 @@ type LRU_K[T comparable] struct {
 	K  int
 	Mu sync.Mutex
 
+	// These two data structures are maintained for all pages with a
+	// Backward K-distance that is smaller than the Retained
+	// Information Period. An asynchronous demon process should
+	// purge history control blocks that are no longer justified
+	// under the retained information criterion.
 	HIST *History[T]
-
-	CRP  int64
-	RIP int64 
 	LAST *Last[T]
+
+	CRP int64
+	RIP int64
 
 	Buffer map[T][]byte
 
-	Cap int
+	Cap             int
+	CleanupInterval time.Duration
 }
 
 type Last[T comparable] struct {
@@ -54,6 +60,14 @@ func (Last *Last[T]) Set(key T, time int64) {
 	Last.last[key] = time
 }
 
+func (Last *Last[T]) Delete(key T) {
+	delete(Last.last, key)
+}
+
+func (Hist *History[T]) Delete(key T) {
+	delete(Hist.hist, key)
+}
+
 func (Hist *History[T]) Get(key T, index int) int64 {
 	reference_times, present := Hist.hist[key]
 	if !present {
@@ -62,6 +76,15 @@ func (Hist *History[T]) Get(key T, index int) int64 {
 
 	return reference_times[index]
 
+}
+
+func (Hist *History[T]) Init(key T, k int) {
+	Hist.hist[key] = make([]int64, k)
+}
+
+func (Hist *History[T]) Exists(key T) bool {
+	_, present := Hist.hist[key]
+	return present
 }
 
 func (Hist *History[T]) Set(key T, index int, time int64) {
@@ -73,14 +96,44 @@ func (Hist *History[T]) Set(key T, index int, time int64) {
 	Hist.hist[key][index] = time
 }
 
+// Each time a page p is referenced, it is
+// made buffer resident (it might already be buffer resident),
+// and we have a history of at least one reference. If the prior
+// access to page p was so long ago that we have no record of
+// it, then after the Conelated Referenm Period we say that our
+// estimate of bt(p,2) is infmity, and make the containing
+// buffer slot available on demand. However, although we
+// may drop p from memory, we need to keep history information about
+// the page around for awhile; otherwise we might
+// reference the page p again relatively quickly and once again
+// have no record of prior reference, drop it again, reference it
+// again, etc. Though the page is frequently referenced, we
+// would have no history about it to recognize this fact. For
+// this reason, we assume that the system will maintain history information
+// about any page for some period after its
+// most recent access. We refer to this period as the Retained
+// Information Period.
+
+// If a disk page p that has never been referenced before suddenly
+// becomes popular enough to be kept in buffer, we
+// should recognize this fact as long as two references to the
+// page are no more thau the Retained Information Period
+// apart. Though we drop the page after the first reference, we keep information
+// around in memory to recognize when a
+// second reference gives a value of bt(p,2) that passes our
+// LRU-2 criterion for retention in buffer. The page history information
+// kept in a memory resident data structure is designated by HIST(p),
+// and contains the last two reference
+// string subscripts i and j, where ri = rj = p, or just the last
+// reference if only one is known.
 func (lru *LRU_K[T]) FindVictim(t int64) T {
 	min := t
 	var victim T
 	for page := range lru.Buffer {
 		time_of_last_reference := lru.LAST.Get(page)
-		if t-time_of_last_reference > lru.CRP && lru.HIST.Get(page,lru.K-1) < min {
+		if t-time_of_last_reference > lru.CRP && lru.HIST.Get(page, lru.K-1) < min {
 			victim = page
-			min = lru.HIST.Get(page,lru.K-1)
+			min = lru.HIST.Get(page, lru.K-1)
 		}
 	}
 
@@ -92,46 +145,54 @@ func NewLRU[T comparable](k int, cap int, crp int64) *LRU_K[T] {
 	history := NewHistory[T](k)
 
 	lru_k := &LRU_K[T]{
-		Mu:   sync.Mutex{},
-		K:    k,
-		CRP:  crp,
-		Cap:  cap,
-		LAST: last,
-		HIST: history,
+		Mu:              sync.Mutex{},
+		K:               k,
+		CRP:             crp,
+		Cap:             cap,
+		LAST:            last,
+		HIST:            history,
+		CleanupInterval: 2 * time.Minute,
 	}
 	return lru_k
 }
 
-// Each time a page p is referenced, it is
-// made buffer resident (it might already be buffer resident),
-// and we have a history of at least one reference. If the prior
-// access to page p was so long ago that we have no record of
-// it, then after the Conelated Referenm Period we say that our
-// estimate of bt(p,2) is infhit y, and make the containing
-// buffer slot available on demand. However, although we
-// may drop p from memory, we need to keep history information about 
-// the page around for awhile; otherwise we might
-// reference the page p again relatively qnicld y and once again
-// have no record of prior reference, drop it again, reference it
-// again, etc. Though the page is frequently referenced, we
-// would have no history about it to recognize this fact. For
-// this reason, we assume that the system will maintain history information
-// about any page for some period after its
-// most recent access. We refer to this period as the Retained
-// Information Period.
+func (lru *LRU_K[T]) Get(key T) ([]byte, bool) {
+	lru.Mu.Lock()
+	defer lru.Mu.Unlock()
 
-// If a disk page p that has never been referenced before sud
-// denly becomes popular enough to be kept in buffer, we
-// should recognize this fact as long as two references to the
-// page are no more thau the Retained Information Period
-// apart. Though we drop the page after the first reference, we keep information
-// around in memory to recognize when a
-// second reference gives a value of bt(p,2) that passes our
-// LRU-2 criterion for retention in buffer. The page history information
-// kept in a memory resident data structure is designated by HIST(p), 
-// and contains the last two reference
-// string subscripts i and j, where ri = rj = p, or just the last
-// reference if onl y one is known. 
+	data, present := lru.Buffer[key]
+	return data, present
+}
+
+func (lru *LRU_K[T]) Cleanup(key T) {
+	lru.Mu.Lock()
+	defer lru.Mu.Unlock()
+
+	delete(lru.Buffer, key)
+	lru.HIST.Delete(key)
+	lru.LAST.Delete(key)
+}
+
+// These two data structures are maintained for all pages with a
+// Backward K-distance that is smaller than the Retained
+// Information Period. An asynchronous demon process should
+// purge history control blocks that are no longer justified under
+// the retained information criterion.
+func (lru *LRU_K[T]) StartCleanup() {
+	cleanupInterval := lru.CleanupInterval
+	for {
+		time.Sleep(cleanupInterval)
+
+		for page := range lru.Buffer {
+			lru.Mu.Lock()
+			backward_K_Distance := lru.HIST.Get(page, lru.K-1)
+			lru.Mu.Unlock()
+			if backward_K_Distance > lru.RIP {
+				go lru.Cleanup(page)
+			}
+		}
+	}
+}
 func (lru *LRU_K[T]) Set(key T, data []byte) (success bool) {
 	lru.Mu.Lock()
 	defer lru.Mu.Unlock()
@@ -141,17 +202,27 @@ func (lru *LRU_K[T]) Set(key T, data []byte) (success bool) {
 	if present {
 		time_of_last_reference := lru.LAST.Get(key)
 
+		// The system should not drop a page immediately after
+		// its first reference, but should keep the page around for a
+		// short period until the likelihood of a dependent follow-up
+		// reference is minimal; then the page can be dropped.
+		// At the same time, interarrival time should be calculated based
+		// on non-correlated access pairs, where each successive access by
+		// the same process within a time-out period is assumed to be correlated
+		// the relationship is transitive. We refer to this approach, which associates
+		// correlated references, as the Time-Out Correlation method;
+		// and we refer to the time-out period as the Correlated Reference Period.
+		//
+		// If a reference to a page p is made several
+		// times during a Correlated Reference Period, we do not
+		//  want to penalize or credit the page for that.
 		if t-time_of_last_reference > lru.CRP {
 			correl_period_of_refd_page := lru.LAST.Get(key) - lru.HIST.Get(key, 0)
 
 			for i := 1; i < lru.K; i++ {
-				// lru.HIST.hist[key][i] = lru.HIST.hist[key][i-1] + correl_period_of_refd_page
 				prev_reference_time := lru.HIST.Get(key, i-1)
 				lru.HIST.Set(key, i, prev_reference_time+correl_period_of_refd_page)
 			}
-
-			// lru.HIST.hist[key][0] = t
-			// lru.LAST.last[key] = t
 
 			lru.HIST.Set(key, 0, t)
 			lru.LAST.Set(key, t)
@@ -164,13 +235,27 @@ func (lru *LRU_K[T]) Set(key T, data []byte) (success bool) {
 	} else {
 		if len(lru.Buffer) < lru.Cap {
 			lru.Buffer[key] = data
-			// lru.LAST.last[key] = t
-			// lru.HIST.hist[key] = make([]int64, lru.K)
-			// lru.HIST.hist[key][0] = t
+
+			lru.LAST.Set(key, t)
+			lru.HIST.Init(key, lru.K)
+			lru.HIST.Set(key, 0, t)
+
 		} else {
-			victim:=lru.FindVictim(t)
+			victim := lru.FindVictim(t)
 			delete(lru.Buffer, victim)
 
+			lru.Buffer[key] = data
+			if !lru.HIST.Exists(key) {
+				lru.HIST.Init(key, lru.K)
+			} else {
+				for i := 1; i < lru.K; i++ {
+					prev_reference_time := lru.HIST.Get(key, i-1)
+					lru.HIST.Set(key, i, prev_reference_time)
+				}
+			}
+
+			lru.HIST.Set(key, 0, t)
+			lru.LAST.Set(key, t)
 		}
 
 	}
