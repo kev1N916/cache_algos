@@ -22,7 +22,7 @@ type Node[T comparable] struct {
 	next           *Node[T]
 }
 
-func DeleteNode[T comparable](node *Node[T]) {
+func deleteNode[T comparable](node *Node[T]) {
 	next := node.next
 	prev := node.prev
 
@@ -96,7 +96,7 @@ func (fifo *FIFO[T]) evict() (key T, evicted bool) {
 		return defaultValue, false
 	}
 
-	DeleteNode(prev)
+	deleteNode(prev)
 	delete(fifo.Nodes, prev.key)
 	return defaultValue, true
 
@@ -139,7 +139,7 @@ func (lru *LRU[T]) add(key T) *Node[T] {
 
 func (lru *LRU[T]) access(key T) {
 	node := lru.Nodes[key]
-	DeleteNode(node)
+	deleteNode(node)
 	head := lru.getHead()
 
 	node.next = head.next
@@ -159,7 +159,7 @@ func (lru *LRU[T]) evict() (T, bool) {
 		return defaultValue, false
 	}
 
-	DeleteNode(prev)
+	deleteNode(prev)
 	delete(lru.Nodes, prev.key)
 	return defaultValue, true
 

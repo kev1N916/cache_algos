@@ -1,6 +1,7 @@
 package lrukgo
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -22,7 +23,7 @@ type LRU_K[T comparable] struct {
 
 	Buffer map[T][]byte
 
-	Cap             int
+	Capacity        int
 	CleanupInterval time.Duration
 }
 
@@ -129,11 +130,34 @@ func (Hist *History[T]) set(key T, index int, time int64) {
 func (lru *LRU_K[T]) FindVictim(t int64) T {
 	min := t
 	var victim T
+	found := false
+
+	log.Println("size of lru cache is ", len(lru.Buffer))
+
 	for page := range lru.Buffer {
 		time_of_last_reference := lru.LAST.get(page)
 		if t-time_of_last_reference > lru.CRP && lru.HIST.get(page, lru.K-1) < min {
+			found = true
 			victim = page
 			min = lru.HIST.get(page, lru.K-1)
+		}
+	}
+
+	if !found {
+		found = false
+		min=t
+		for page := range lru.Buffer {
+			if lru.HIST.get(page, lru.K-1) < min {
+				found = true
+				victim = page
+				min = lru.HIST.get(page, lru.K-1)
+			}
+		}
+	}
+
+	if !found{
+		for page:=range lru.Buffer{
+			return page
 		}
 	}
 
@@ -144,18 +168,30 @@ func NewLRU[T comparable](k int, cap int, crp int64) *LRU_K[T] {
 	last := NewLast[T]()
 	history := NewHistory[T](k)
 
+	if cap <= 0 || k <= 0 || crp <= 0 {
+		panic("these parameters are not allowed")
+	}
+
 	lru_k := &LRU_K[T]{
 		Mu:              sync.Mutex{},
 		K:               k,
 		CRP:             crp,
-		Cap:             cap,
+		Capacity:        cap,
 		LAST:            last,
 		HIST:            history,
 		CleanupInterval: 2 * time.Minute,
-		Buffer: make(map[T][]byte),
+		Buffer:          make(map[T][]byte),
 	}
-	// lru_k.Buffer=make(map[T][]byte,cap)
+	// lru_k.Buffer=make(map[T][]byte,Capacity)
 	return lru_k
+}
+
+func (lru *LRU_K[T]) Size() int {
+	lru.Mu.Lock()
+	defer lru.Mu.Unlock()
+
+	size := len(lru.Buffer)
+	return size
 }
 
 func (lru *LRU_K[T]) Get(key T) ([]byte, bool) {
@@ -234,18 +270,20 @@ func (lru *LRU_K[T]) Set(key T, data []byte) (success bool) {
 
 		lru.Buffer[key] = data
 	} else {
-		if len(lru.Buffer) < lru.Cap {
+		if len(lru.Buffer) < lru.Capacity {
 			lru.Buffer[key] = data
 
 			lru.LAST.set(key, t)
 			lru.HIST.init(key, lru.K)
 			lru.HIST.set(key, 0, t)
 
-		} else if(len(lru.Buffer)>=lru.Cap) {
+		} else if len(lru.Buffer) >= lru.Capacity {
 			victim := lru.FindVictim(t)
-			
+			log.Println("find victim has reuturned this", victim)
 			delete(lru.Buffer, victim)
 			lru.LAST.delete(victim)
+
+			log.Println("victim evicted")
 
 			lru.Buffer[key] = data
 			if !lru.HIST.exists(key) {
