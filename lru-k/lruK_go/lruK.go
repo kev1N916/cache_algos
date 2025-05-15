@@ -48,7 +48,7 @@ func NewHistory[T comparable](k int) *History[T] {
 	return history
 }
 
-func (Last *Last[T]) Get(key T) int64 {
+func (Last *Last[T]) get(key T) int64 {
 	t, present := Last.last[key]
 	if !present {
 		panic("key not present")
@@ -56,19 +56,19 @@ func (Last *Last[T]) Get(key T) int64 {
 	return t
 }
 
-func (Last *Last[T]) Set(key T, time int64) {
+func (Last *Last[T]) set(key T, time int64) {
 	Last.last[key] = time
 }
 
-func (Last *Last[T]) Delete(key T) {
+func (Last *Last[T]) delete(key T) {
 	delete(Last.last, key)
 }
 
-func (Hist *History[T]) Delete(key T) {
+func (Hist *History[T]) delete(key T) {
 	delete(Hist.hist, key)
 }
 
-func (Hist *History[T]) Get(key T, index int) int64 {
+func (Hist *History[T]) get(key T, index int) int64 {
 	reference_times, present := Hist.hist[key]
 	if !present {
 		panic("key not present")
@@ -78,16 +78,16 @@ func (Hist *History[T]) Get(key T, index int) int64 {
 
 }
 
-func (Hist *History[T]) Init(key T, k int) {
+func (Hist *History[T]) init(key T, k int) {
 	Hist.hist[key] = make([]int64, k)
 }
 
-func (Hist *History[T]) Exists(key T) bool {
+func (Hist *History[T]) exists(key T) bool {
 	_, present := Hist.hist[key]
 	return present
 }
 
-func (Hist *History[T]) Set(key T, index int, time int64) {
+func (Hist *History[T]) set(key T, index int, time int64) {
 	_, present := Hist.hist[key]
 	if !present {
 		panic("key not present")
@@ -130,10 +130,10 @@ func (lru *LRU_K[T]) FindVictim(t int64) T {
 	min := t
 	var victim T
 	for page := range lru.Buffer {
-		time_of_last_reference := lru.LAST.Get(page)
-		if t-time_of_last_reference > lru.CRP && lru.HIST.Get(page, lru.K-1) < min {
+		time_of_last_reference := lru.LAST.get(page)
+		if t-time_of_last_reference > lru.CRP && lru.HIST.get(page, lru.K-1) < min {
 			victim = page
-			min = lru.HIST.Get(page, lru.K-1)
+			min = lru.HIST.get(page, lru.K-1)
 		}
 	}
 
@@ -152,7 +152,9 @@ func NewLRU[T comparable](k int, cap int, crp int64) *LRU_K[T] {
 		LAST:            last,
 		HIST:            history,
 		CleanupInterval: 2 * time.Minute,
+		Buffer: make(map[T][]byte),
 	}
+	// lru_k.Buffer=make(map[T][]byte,cap)
 	return lru_k
 }
 
@@ -169,8 +171,8 @@ func (lru *LRU_K[T]) Cleanup(key T) {
 	defer lru.Mu.Unlock()
 
 	delete(lru.Buffer, key)
-	lru.HIST.Delete(key)
-	lru.LAST.Delete(key)
+	lru.HIST.delete(key)
+	lru.LAST.delete(key)
 }
 
 // These two data structures are maintained for all pages with a
@@ -185,7 +187,7 @@ func (lru *LRU_K[T]) StartCleanup() {
 
 		for page := range lru.Buffer {
 			lru.Mu.Lock()
-			backward_K_Distance := lru.HIST.Get(page, lru.K-1)
+			backward_K_Distance := lru.HIST.get(page, lru.K-1)
 			lru.Mu.Unlock()
 			if backward_K_Distance > lru.RIP {
 				go lru.Cleanup(page)
@@ -200,7 +202,7 @@ func (lru *LRU_K[T]) Set(key T, data []byte) (success bool) {
 	t := time.Now().Unix()
 	_, present := lru.Buffer[key]
 	if present {
-		time_of_last_reference := lru.LAST.Get(key)
+		time_of_last_reference := lru.LAST.get(key)
 
 		// The system should not drop a page immediately after
 		// its first reference, but should keep the page around for a
@@ -217,18 +219,17 @@ func (lru *LRU_K[T]) Set(key T, data []byte) (success bool) {
 		// times during a Correlated Reference Period, we do not
 		//  want to penalize or credit the page for that.
 		if t-time_of_last_reference > lru.CRP {
-			correl_period_of_refd_page := lru.LAST.Get(key) - lru.HIST.Get(key, 0)
+			correl_period_of_refd_page := lru.LAST.get(key) - lru.HIST.get(key, 0)
 
 			for i := 1; i < lru.K; i++ {
-				prev_reference_time := lru.HIST.Get(key, i-1)
-				lru.HIST.Set(key, i, prev_reference_time+correl_period_of_refd_page)
+				prev_reference_time := lru.HIST.get(key, i-1)
+				lru.HIST.set(key, i, prev_reference_time+correl_period_of_refd_page)
 			}
 
-			lru.HIST.Set(key, 0, t)
-			lru.LAST.Set(key, t)
-
+			lru.HIST.set(key, 0, t)
+			lru.LAST.set(key, t)
 		} else {
-			lru.LAST.Set(key, t)
+			lru.LAST.set(key, t)
 		}
 
 		lru.Buffer[key] = data
@@ -236,26 +237,28 @@ func (lru *LRU_K[T]) Set(key T, data []byte) (success bool) {
 		if len(lru.Buffer) < lru.Cap {
 			lru.Buffer[key] = data
 
-			lru.LAST.Set(key, t)
-			lru.HIST.Init(key, lru.K)
-			lru.HIST.Set(key, 0, t)
+			lru.LAST.set(key, t)
+			lru.HIST.init(key, lru.K)
+			lru.HIST.set(key, 0, t)
 
-		} else {
+		} else if(len(lru.Buffer)>=lru.Cap) {
 			victim := lru.FindVictim(t)
+			
 			delete(lru.Buffer, victim)
+			lru.LAST.delete(victim)
 
 			lru.Buffer[key] = data
-			if !lru.HIST.Exists(key) {
-				lru.HIST.Init(key, lru.K)
+			if !lru.HIST.exists(key) {
+				lru.HIST.init(key, lru.K)
 			} else {
 				for i := 1; i < lru.K; i++ {
-					prev_reference_time := lru.HIST.Get(key, i-1)
-					lru.HIST.Set(key, i, prev_reference_time)
+					prev_reference_time := lru.HIST.get(key, i-1)
+					lru.HIST.set(key, i, prev_reference_time)
 				}
 			}
 
-			lru.HIST.Set(key, 0, t)
-			lru.LAST.Set(key, t)
+			lru.HIST.set(key, 0, t)
+			lru.LAST.set(key, t)
 		}
 
 	}

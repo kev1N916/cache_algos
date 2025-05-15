@@ -20,10 +20,15 @@ func NewFreqNode[T comparable]() *FreqNode[T] {
 func GetNewNode[T comparable](value int, prev, next *FreqNode[T]) *FreqNode[T] {
 	new_node := NewFreqNode[T]()
 	new_node.value = value
+
 	new_node.prev = prev
 	new_node.next = next
+
 	prev.next = new_node
-	next.prev = new_node
+
+	if next != nil {
+		next.prev = new_node
+	}
 	return new_node
 }
 
@@ -32,7 +37,9 @@ func DeleteNode[T comparable](node *FreqNode[T]) {
 	prev := node.prev
 
 	prev.next = next
-	next.prev = prev
+	if next != nil {
+		next.prev = prev
+	}
 }
 
 type LFU_Item[T comparable] struct {
@@ -49,7 +56,7 @@ func NewLfuItem[T comparable](data any, parent *FreqNode[T]) *LFU_Item[T] {
 }
 
 type LFU_Cache[T comparable] struct {
-	size int 
+	size      int
 	bykey     map[T]*LFU_Item[T]
 	freq_Head *FreqNode[T]
 }
@@ -73,7 +80,7 @@ func (lfuCache *LFU_Cache[T]) Insert(key T, value any) {
 		panic("Key already exists")
 	}
 
-	if len(lfuCache.bykey)==lfuCache.size{
+	if len(lfuCache.bykey) == lfuCache.size {
 		lfuCache.Evict()
 	}
 
