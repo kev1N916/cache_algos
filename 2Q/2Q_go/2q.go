@@ -95,7 +95,7 @@ func (fifo *FIFO[T]) evict() (key T, evicted bool) {
 	if prev.end_identifier == 1 {
 		return defaultValue, false
 	}
-
+	defaultValue = prev.key
 	deleteNode(prev)
 	delete(fifo.Nodes, prev.key)
 	return defaultValue, true
@@ -159,6 +159,8 @@ func (lru *LRU[T]) evict() (T, bool) {
 		return defaultValue, false
 	}
 
+	defaultValue = prev.key
+
 	deleteNode(prev)
 	delete(lru.Nodes, prev.key)
 	return defaultValue, true
@@ -194,7 +196,7 @@ func (twoQ *TwoQ[T]) reclaimFor() {
 		delete(twoQ.PageBuffer, key)
 		twoQ.A1out.add(key)
 
-		if len(twoQ.A1out.Nodes) >= twoQ.K_Out {
+		if len(twoQ.A1out.Nodes) > twoQ.K_Out {
 			_, evicted := twoQ.A1out.evict()
 			if !evicted {
 				panic("why cant we evict")
@@ -212,17 +214,25 @@ func (twoQ *TwoQ[T]) reclaimFor() {
 }
 func (twoQ *TwoQ[T]) Insert(key T, value any) (any, bool) {
 
+	if twoQ.A1out.isPresent(key) {
+		twoQ.reclaimFor()
+		twoQ.Am.add(key)
+		twoQ.PageBuffer[key] = &Page{
+			data:      value,
+			queueType: "A_M",
+		}
+		return value, true
+	}
 	page, present := twoQ.PageBuffer[key]
 
 	if !present {
 		twoQ.reclaimFor()
-
+		twoQ.A1in.add(key)
 		twoQ.PageBuffer[key] = &Page{
 			data:      value,
 			queueType: "A1_In",
 		}
-
-		return page.data, false
+		return value, false
 	}
 
 	if page.queueType == "A1_In" {
@@ -233,15 +243,5 @@ func (twoQ *TwoQ[T]) Insert(key T, value any) (any, bool) {
 		twoQ.Am.access(key)
 	}
 
-	if twoQ.A1out.isPresent(key) {
-		twoQ.reclaimFor()
-		twoQ.Am.add(key)
-		twoQ.PageBuffer[key] = &Page{
-			data:      value,
-			queueType: "A_M",
-		}
-	}
-
 	return page.data, true
-
 }
